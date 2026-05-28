@@ -18,11 +18,15 @@
   .wide { grid-row: span 2; }
   h2 { margin: 0 0 8px; font-size: 14px; color: #8af; }
   canvas.video, canvas.map { width: 100%; height: calc(100% - 30px); background: #000; display: block; }
+  #map { height: calc(100% - 100px); }
   #log { height: calc(100% - 30px); overflow-y: auto; font-size: 12px; line-height: 1.4; }
   .badge { display: inline-block; padding: 2px 6px; border-radius: 3px; margin-right: 6px; }
   .b-state { background: #246; }
   .b-anomaly { background: #c33; }
   #state-chip { padding: 2px 8px; border-radius: 3px; background: #246; font-weight: bold; }
+  #telemetry { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; font-size:12px; }
+  .metric { background:#222; border:1px solid #333; border-radius:4px; padding:6px 8px; min-width:120px; }
+  .metric strong { display:block; color:#8af; margin-bottom:2px; }
 </style>
 </head>
 <body>
@@ -47,6 +51,12 @@
   </div>
   <div class="pane">
     <h2>Map</h2>
+    <div id="telemetry">
+      <div class="metric"><strong>Corridor</strong><span id="corridor-chip">CLEAR</span></div>
+      <div class="metric"><strong>Distance</strong><span id="distance-chip">-</span></div>
+      <div class="metric"><strong>Direction</strong><span id="direction-chip">center</span></div>
+      <div class="metric"><strong>Point Count</strong><span id="points-chip">0</span></div>
+    </div>
     <canvas id="map" class="map"></canvas>
   </div>
   <div class="pane">
@@ -59,6 +69,10 @@ const streamCanvas = document.getElementById('stream');
 const mapCanvas = document.getElementById('map');
 const log = document.getElementById('log');
 const stateChip = document.getElementById('state-chip');
+const corridorChip = document.getElementById('corridor-chip');
+const distanceChip = document.getElementById('distance-chip');
+const directionChip = document.getElementById('direction-chip');
+const pointsChip = document.getElementById('points-chip');
 const streamCtx = streamCanvas.getContext('2d');
 const mapCtx = mapCanvas.getContext('2d');
 let lastMap = null;
@@ -148,6 +162,30 @@ evWS.onmessage = (ev) => {
     const div = document.createElement('div');
     div.innerHTML = `<span class="badge b-state">CAP</span> ${e.payload.class_name}`;
     log.prepend(div);
+  } else if (e.type === 'corridor_blocked') {
+    const div = document.createElement('div');
+    div.innerHTML = `<span class="badge b-anomaly">AISLE</span> blocked ${e.payload.direction || 'center'} ${e.payload.distance_m ? e.payload.distance_m.toFixed(2) + 'm' : ''}`;
+    log.prepend(div);
+  } else if (e.type === 'corridor_cleared') {
+    const div = document.createElement('div');
+    div.innerHTML = `<span class="badge b-state">AISLE</span> cleared`;
+    log.prepend(div);
+  } else if (e.type === 'approach_started') {
+    const div = document.createElement('div');
+    div.innerHTML = `<span class="badge b-anomaly">APP</span> approach started`;
+    log.prepend(div);
+  } else if (e.type === 'approach_step') {
+    const div = document.createElement('div');
+    div.innerHTML = `<span class="badge b-state">STEP</span> ${e.payload.kind} ${e.payload.step || ''}`;
+    log.prepend(div);
+  } else if (e.type === 'telegram_sent') {
+    const div = document.createElement('div');
+    div.innerHTML = `<span class="badge b-state">TG</span> image sent`;
+    log.prepend(div);
+  } else if (e.type === 'telegram_failed') {
+    const div = document.createElement('div');
+    div.innerHTML = `<span class="badge b-anomaly">TG</span> send failed`;
+    log.prepend(div);
   }
 };
 
@@ -160,6 +198,12 @@ async function refreshMap() {
 
 function drawMap(m) {
   if (!m) return;
+  corridorChip.textContent = m.corridor_clear ? 'CLEAR' : 'BLOCKED';
+  corridorChip.style.color = m.corridor_clear ? '#6f6' : '#f66';
+  distanceChip.textContent = m.obstruction_distance_m == null ? '-' : `${m.obstruction_distance_m.toFixed(2)} m`;
+  directionChip.textContent = m.obstruction_direction || 'center';
+  pointsChip.textContent = String(m.obstruction_point_count || 0);
+
   const w = mapCanvas.width, h = mapCanvas.height;
   mapCtx.fillStyle = '#000';
   mapCtx.fillRect(0, 0, w, h);
@@ -216,6 +260,8 @@ function drawMap(m) {
     mapCtx.fill();
   }
 
+  drawCorridorInset(m);
+
   mapCtx.fillStyle = '#f44';
   for (const a of m.anomalies || []) {
     mapCtx.fillRect(tx(a.robot_pose[0]) - 4, ty(a.robot_pose[1]) - 4, 8, 8);
@@ -224,6 +270,47 @@ function drawMap(m) {
       mapCtx.fillText(a.class_name, tx(a.robot_pose[0]) + 6, ty(a.robot_pose[1]) - 6);
       mapCtx.fillStyle = '#f44';
     }
+  }
+}
+
+function drawCorridorInset(m) {
+  const insetW = 140;
+  const insetH = 190;
+  const insetX = mapCanvas.width - insetW - 12;
+  const insetY = 12;
+  mapCtx.fillStyle = 'rgba(15, 15, 15, 0.92)';
+  mapCtx.fillRect(insetX, insetY, insetW, insetH);
+  mapCtx.strokeStyle = '#444';
+  mapCtx.strokeRect(insetX, insetY, insetW, insetH);
+
+  mapCtx.fillStyle = '#ddd';
+  mapCtx.fillText('Aisle Corridor', insetX + 10, insetY + 16);
+  const corridorX = insetX + 32;
+  const corridorY = insetY + 28;
+  const corridorW = insetW - 64;
+  const corridorH = insetH - 58;
+  mapCtx.strokeStyle = m.corridor_clear ? '#2c6' : '#f55';
+  mapCtx.lineWidth = 2;
+  mapCtx.strokeRect(corridorX, corridorY, corridorW, corridorH);
+
+  mapCtx.fillStyle = '#fa0';
+  mapCtx.beginPath();
+  mapCtx.moveTo(insetX + insetW / 2, insetY + insetH - 16);
+  mapCtx.lineTo(insetX + insetW / 2 - 8, insetY + insetH - 32);
+  mapCtx.lineTo(insetX + insetW / 2 + 8, insetY + insetH - 32);
+  mapCtx.closePath();
+  mapCtx.fill();
+
+  if (!m.corridor_clear && m.obstruction_distance_m != null) {
+    const norm = Math.max(0, Math.min(1, (m.obstruction_distance_m - 0.4) / 1.6));
+    const y = corridorY + corridorH - norm * corridorH;
+    let x = insetX + insetW / 2;
+    if ((m.obstruction_direction || 'center') === 'left') x -= corridorW * 0.22;
+    if ((m.obstruction_direction || 'center') === 'right') x += corridorW * 0.22;
+    mapCtx.fillStyle = '#f55';
+    mapCtx.beginPath();
+    mapCtx.arc(x, y, 9, 0, 2 * Math.PI);
+    mapCtx.fill();
   }
 }
 

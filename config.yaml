@@ -10,8 +10,13 @@ waypoints:
 
 patrol:
   loop_forever: true
-  scan_turns: 4
-  scan_pause_sec: 1.0
+  scan_turns: 1
+  scan_pause_sec: 0.35
+  forward_steps_per_cycle: 3
+  forward_speed_mps: 0.22
+  forward_step_duration_sec: 1.0
+  sweep_yaw_radps: 0.45
+  sweep_turn_duration_sec: 0.55
 
 detection:
   enabled: true
@@ -20,6 +25,19 @@ detection:
   conf_threshold: 0.25
   cooldown_sec: 0
   detection_classes: [person, chair, office chair, couch, bench, suitcase, backpack]
+
+aisle:
+  enabled: true
+  x_min_m: 0.4
+  x_max_m: 2.0
+  half_width_m: 0.45
+  min_points_in_zone: 12
+  alert_repeat_sec: 3.0
+  closeup_stop_distance_m: 0.8
+  approach_step_m: 0.25
+  max_approach_steps: 3
+  turn_step_deg: 12
+  reclear_consecutive_frames: 2
 
 alert:
   audio_file: ../deploy_agentics_real/assets/alert.wav

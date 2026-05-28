@@ -25,11 +25,16 @@ class PatrolConfig(BaseModel):
     loop_forever: bool = True
     scan_turns: int = 4
     scan_pause_sec: float = 1.0
+    forward_steps_per_cycle: int = 3
+    forward_speed_mps: float = 0.22
+    forward_step_duration_sec: float = 1.0
+    sweep_yaw_radps: float = 0.45
+    sweep_turn_duration_sec: float = 0.55
 
 
 class DetectionConfig(BaseModel):
     enabled: bool = True
-    model_name: str = "yoloe-26x-seg.pt"
+    model_name: str = "yolo11n.pt"
     interval_sec: float = 0.5
     conf_threshold: float = 0.25
     cooldown_sec: int = 300
@@ -49,10 +54,25 @@ class WebConfig(BaseModel):
     stream_fps: int = 10
 
 
+class AisleConfig(BaseModel):
+    enabled: bool = True
+    x_min_m: float = 0.4
+    x_max_m: float = 2.0
+    half_width_m: float = 0.45
+    min_points_in_zone: int = 12
+    alert_repeat_sec: float = 3.0
+    closeup_stop_distance_m: float = 0.8
+    approach_step_m: float = 0.25
+    max_approach_steps: int = 3
+    turn_step_deg: float = 12.0
+    reclear_consecutive_frames: int = 2
+
+
 class Settings(BaseModel):
     robot: RobotConfig
     waypoints: list[WaypointConfig]
     patrol: PatrolConfig
+    aisle: AisleConfig
     detection: DetectionConfig
     alert: AlertConfig
     web: WebConfig

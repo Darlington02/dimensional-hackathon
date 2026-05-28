@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class _ConnectionProtocol(Protocol):
+    def lidar_stream(self): ...
     def video_stream(self): ...
     def odom_stream(self): ...
     def move(self, twist, duration: float = 0.0) -> bool: ...
@@ -66,9 +67,11 @@ class Go2Runner:
 
         self._conn: _ConnectionProtocol | None = None
         self._video_subject: Subject = Subject()
+        self._lidar_subject: Subject = Subject()
         self._pose = Pose(0.0, 0.0, 0.0)
         self._pose_lock = threading.Lock()
         self._video_sub = None
+        self._lidar_sub = None
         self._odom_sub = None
         self._audio_hub: Any = None
         self._alert_uuid: str | None = None
@@ -104,6 +107,7 @@ class Go2Runner:
 
         logger.info("Subscribing to video and odometry streams")
         self._video_sub = self._conn.video_stream().subscribe(self._on_video)
+        self._lidar_sub = self._conn.lidar_stream().subscribe(self._on_lidar)
         self._odom_sub = self._conn.odom_stream().subscribe(self._on_odom)
         logger.info("Sending standup and balance commands")
         self._conn.standup()
@@ -139,6 +143,11 @@ class Go2Runner:
         except Exception:
             pass
         try:
+            if self._lidar_sub is not None:
+                self._lidar_sub.dispose()
+        except Exception:
+            pass
+        try:
             if self._odom_sub is not None:
                 self._odom_sub.dispose()
         except Exception:
@@ -155,6 +164,9 @@ class Go2Runner:
 
     def video_stream(self) -> Subject:
         return self._video_subject
+
+    def lidar_stream(self) -> Subject:
+        return self._lidar_subject
 
     def _on_video(self, frame) -> None:
         try:
@@ -175,6 +187,12 @@ class Go2Runner:
             self._video_subject.on_next(arr)
         except Exception as e:
             logger.warning("Video frame handler error: %s", e)
+
+    def _on_lidar(self, msg) -> None:
+        try:
+            self._lidar_subject.on_next(msg)
+        except Exception as e:
+            logger.warning("Lidar handler error: %s", e)
 
     def _on_odom(self, msg) -> None:
         try:
@@ -201,7 +219,14 @@ class Go2Runner:
         with self._pose_lock:
             return self._pose
 
-    def move_to(self, x: float, y: float, yaw_deg: float, duration_sec: float = 5.0) -> bool:
+    def move_to(
+        self,
+        x: float,
+        y: float,
+        yaw_deg: float,
+        duration_sec: float = 5.0,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> bool:
         if self._conn is None:
             return False
         deadline = time.monotonic() + duration_sec
@@ -210,10 +235,15 @@ class Go2Runner:
         kp_yaw = 1.2
 
         try:
+            interrupted = False
             while time.monotonic() < deadline:
                 conn = self._conn
                 if conn is None:
                     return False
+                if should_stop is not None and should_stop():
+                    logger.info("move_to interrupted before reaching target")
+                    interrupted = True
+                    break
 
                 pose = self.get_pose()
                 dx, dy = x - pose.x, y - pose.y
@@ -242,7 +272,7 @@ class Go2Runner:
                     conn.move(_Twist(0.0, 0.0, 0.0))
             except Exception:
                 pass
-        return True
+        return not interrupted
 
     def drive_for_duration(
         self,

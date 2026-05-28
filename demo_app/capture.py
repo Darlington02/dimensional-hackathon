@@ -28,20 +28,44 @@ class CaptureBuffer:
 
     def _encode_snapshot(self, event: AlertEvent) -> Path:
         ts_label = int(event.timestamp * 1000)
-        jpg_path = self._output_dir / f"anomaly_{ts_label}.jpg"
+        jpg_path = self._output_dir / f"obstruction_{ts_label}.jpg"
         annotated = event.frame.copy()
-        x1, y1, x2, y2 = event.bbox
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        label = f"{event.class_name} {event.confidence:.2f}"
-        cv2.putText(
-            annotated,
-            label,
-            (x1, max(15, y1 - 8)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 0),
-            2,
-        )
+        for idx, line in enumerate([
+            "AISLE OBSTRUCTION DETECTED",
+            f"dir={event.obstruction_direction or 'center'} "
+            f"dist={event.obstruction_distance_m:.2f}m" if event.obstruction_distance_m is not None else "dist=unknown",
+            f"points={event.obstruction_point_count}",
+        ]):
+            y = 28 + idx * 28
+            cv2.putText(
+                annotated,
+                line,
+                (12, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                (0, 0, 255),
+                2,
+            )
+
+        detections = event.evidence_detections or []
+        if detections:
+            for det in detections:
+                x1, y1, x2, y2 = det.bbox
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                label = f"{det.class_name} {det.confidence:.2f}"
+                cv2.putText(
+                    annotated,
+                    label,
+                    (x1, max(90, y1 - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 255),
+                    2,
+                )
+        elif event.bbox is not None:
+            x1, y1, x2, y2 = event.bbox
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
         cv2.imwrite(str(jpg_path), annotated)
         return jpg_path
 

@@ -16,13 +16,26 @@ def format_alert_caption(event: AlertEvent) -> str:
     ts = datetime.datetime.utcfromtimestamp(event.timestamp).strftime("%Y-%m-%d %H:%M:%S")
     x, y = event.robot_pose
     wp_part = f" near {event.nearest_waypoint}" if event.nearest_waypoint else ""
-    return (
-        "ALERT DETECTED\n"
-        f"Type: {event.class_name}\n"
-        f"Confidence: {event.confidence:.2f}\n"
-        f"Robot pose: ~({x:.1f}, {y:.1f}) m{wp_part}\n"
-        f"Time: {ts}"
+    labels = ""
+    if event.evidence_detections:
+        unique = sorted({det.class_name for det in event.evidence_detections})
+        labels = f"\nEvidence: {', '.join(unique)}"
+    lines = ["AISLE OBSTRUCTION DETECTED"]
+    if event.obstruction_distance_m is not None:
+        lines.append(f"Distance: {event.obstruction_distance_m:.2f} m")
+    else:
+        lines.append("Distance: unknown")
+    lines.extend(
+        [
+            f"Direction: {event.obstruction_direction or 'center'}",
+            f"Point count: {event.obstruction_point_count}",
+            f"Robot pose: ~({x:.1f}, {y:.1f}) m{wp_part}",
+            f"Time: {ts}",
+        ]
     )
+    if labels:
+        lines.append(labels.removeprefix("\n"))
+    return "\n".join(lines)
 
 
 class TelegramBot:
@@ -109,10 +122,10 @@ class TelegramBot:
         await self._app.shutdown()
         self._app = None
 
-    async def send_photo_alert(self, event: AlertEvent, jpg_path: Path) -> None:
+    async def send_photo_alert(self, event: AlertEvent, jpg_path: Path) -> bool:
         if self._app is None:
             self._dead_letter(event, jpg_path, None)
-            return
+            return False
 
         caption = format_alert_caption(event)
         for delay in (0, 1, 2, 4):
@@ -121,11 +134,12 @@ class TelegramBot:
             try:
                 with open(jpg_path, "rb") as photo:
                     await self._app.bot.send_photo(self._owner, photo=photo, caption=caption)
-                return
+                return True
             except Exception as e:
                 logger.warning("Telegram send failed after %ss: %s", delay, e)
 
         self._dead_letter(event, jpg_path, None)
+        return False
 
     async def send_alert(self, event: AlertEvent, jpg_path: Path, mp4_path: Path) -> None:
         if self._app is None:

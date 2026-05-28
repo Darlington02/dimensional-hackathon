@@ -21,6 +21,11 @@ class PatrolController:
         loop_forever: bool = True,
         scan_turns: int = 4,
         scan_pause_sec: float = 1.0,
+        forward_steps_per_cycle: int = 3,
+        forward_speed_mps: float = 0.22,
+        forward_step_duration_sec: float = 1.0,
+        sweep_yaw_radps: float = 0.45,
+        sweep_turn_duration_sec: float = 0.55,
     ) -> None:
         self._runner = runner
         self._waypoints = waypoints
@@ -28,18 +33,26 @@ class PatrolController:
         self._loop_forever = loop_forever
         self._scan_turns = scan_turns
         self._scan_pause_sec = scan_pause_sec
+        self._forward_steps_per_cycle = forward_steps_per_cycle
+        self._forward_speed_mps = forward_speed_mps
+        self._forward_step_duration_sec = forward_step_duration_sec
+        self._sweep_yaw_radps = sweep_yaw_radps
+        self._sweep_turn_duration_sec = sweep_turn_duration_sec
         self._task: asyncio.Task | None = None
         self._stop_requested = False
+        self._return_home_on_stop = False
         self._current_wp: str | None = None
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
         self._stop_requested = False
+        self._return_home_on_stop = False
         self._task = asyncio.create_task(self._run())
 
-    async def stop(self) -> None:
+    async def stop(self, return_home: bool = False) -> None:
         self._stop_requested = True
+        self._return_home_on_stop = return_home
         task = self._task
         if task is not None:
             await task
@@ -64,6 +77,7 @@ class PatrolController:
             target_y,
             target_yaw,
             duration,
+            lambda: self._stop_requested,
         )
 
     async def manual_drive(
@@ -97,6 +111,9 @@ class PatrolController:
         current = self._current_wp or "-"
         return f"mode={mode} current={current} visited={visited}"
 
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
     def current_waypoint(self) -> str:
         return self._current_wp or ""
 
@@ -106,53 +123,84 @@ class PatrolController:
         self._push_event("state", {"mode": "PATROLLING"})
 
         try:
+            cycle_index = 0
             while not self._stop_requested:
-                for waypoint in self._waypoints:
+                cycle_index += 1
+                self._current_wp = f"AISLE_{cycle_index}"
+                self._web_state["planned_path"] = []
+
+                for step_idx in range(self._forward_steps_per_cycle):
                     if self._stop_requested:
                         break
-                    self._current_wp = waypoint.id
-                    await self._move_to_waypoint(waypoint)
-                    self._web_state["visited"].append(waypoint.id)
-                    await self._scan_in_place()
+                    await self._forward_step(step_idx + 1)
+
+                if self._stop_requested:
+                    break
+
+                await self._scan_in_place()
 
                 if not self._loop_forever:
                     break
 
-            self._set_mode("RETURNING")
-            self._push_event("state", {"mode": "RETURNING"})
-            await self._return_home()
+            if self._return_home_on_stop:
+                self._set_mode("RETURNING")
+                self._push_event("state", {"mode": "RETURNING"})
+                await self._return_home()
         finally:
             self._current_wp = None
             self._web_state["planned_path"] = []
             self._set_mode("IDLE")
             self._push_event("state", {"mode": "IDLE"})
 
-    async def _move_to_waypoint(self, waypoint: Waypoint) -> None:
+    async def _move_to_waypoint(self, waypoint: Waypoint) -> bool:
         pose = self._runner.get_pose()
         self._web_state["planned_path"] = [[pose.x, pose.y], [waypoint.pos[0], waypoint.pos[1]]]
         dist = math.hypot(waypoint.pos[0] - pose.x, waypoint.pos[1] - pose.y)
         duration = max(1.0, dist / self.SPEED_MPS)
         logger.info("Moving to %s", waypoint.id)
-        await asyncio.to_thread(
+        return await asyncio.to_thread(
             self._runner.move_to,
             waypoint.pos[0],
             waypoint.pos[1],
             waypoint.yaw_deg,
             duration,
+            lambda: self._stop_requested,
         )
 
     async def _scan_in_place(self) -> None:
+        if self._scan_turns <= 0:
+            return
+
         for _ in range(self._scan_turns):
-            if self._stop_requested:
-                return
-            pose = self._runner.get_pose()
-            await asyncio.to_thread(self._runner.move_to, pose.x, pose.y, pose.yaw_deg + 90.0, 1.0)
-            await asyncio.sleep(self._scan_pause_sec)
+            for yaw_radps, duration_sec in (
+                (self._sweep_yaw_radps, self._sweep_turn_duration_sec),
+                (-self._sweep_yaw_radps, self._sweep_turn_duration_sec * 2.0),
+                (self._sweep_yaw_radps, self._sweep_turn_duration_sec),
+            ):
+                if self._stop_requested:
+                    return
+                await self.manual_drive(yaw_radps=yaw_radps, duration_sec=duration_sec)
+                await asyncio.sleep(self._scan_pause_sec)
+
+    async def _forward_step(self, step_number: int) -> None:
+        if self._stop_requested:
+            return
+        pose = self._runner.get_pose()
+        yaw_rad = math.radians(pose.yaw_deg)
+        step_distance = self._forward_speed_mps * self._forward_step_duration_sec
+        target_x = pose.x + math.cos(yaw_rad) * step_distance
+        target_y = pose.y + math.sin(yaw_rad) * step_distance
+        self._web_state["planned_path"] = [[pose.x, pose.y], [target_x, target_y]]
+        await self.manual_drive(
+            forward_mps=self._forward_speed_mps,
+            duration_sec=self._forward_step_duration_sec,
+        )
+        await asyncio.sleep(0.20)
 
     async def _return_home(self) -> None:
         pose = self._runner.get_pose()
         self._web_state["planned_path"] = [[pose.x, pose.y], [0.0, 0.0]]
-        await asyncio.to_thread(self._runner.move_to, 0.0, 0.0, 0.0, 5.0)
+        await asyncio.to_thread(self._runner.move_to, 0.0, 0.0, 0.0, 5.0, lambda: self._stop_requested)
 
     def _set_mode(self, mode: str) -> None:
         self._web_state["mode"] = mode
