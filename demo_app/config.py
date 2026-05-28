@@ -23,13 +23,14 @@ class WaypointConfig(BaseModel):
 
 class PatrolConfig(BaseModel):
     loop_forever: bool = True
-    scan_turns: int = 4
+    scan_turns: int = 1
     scan_pause_sec: float = 1.0
-    forward_steps_per_cycle: int = 3
-    forward_speed_mps: float = 0.22
-    forward_step_duration_sec: float = 1.0
-    sweep_yaw_radps: float = 0.45
-    sweep_turn_duration_sec: float = 0.55
+    motion_settle_sec: float = 0.05
+    forward_steps_per_cycle: int = 5
+    forward_speed_mps: float = 0.60
+    forward_step_duration_sec: float = 1.25
+    sweep_yaw_radps: float = 0.24
+    sweep_turn_duration_sec: float = 0.28
 
 
 class DetectionConfig(BaseModel):
@@ -60,6 +61,10 @@ class AisleConfig(BaseModel):
     x_max_m: float = 2.0
     half_width_m: float = 0.45
     min_points_in_zone: int = 12
+    min_z_m: float = -0.35
+    max_z_m: float = 1.20
+    cell_size_m: float = 0.12
+    min_occupied_cells: int = 2
     alert_repeat_sec: float = 3.0
     closeup_stop_distance_m: float = 0.8
     approach_step_m: float = 0.25

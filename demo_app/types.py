@@ -34,6 +34,7 @@ class AisleObservation:
     obstruction_distance_m: float | None
     obstruction_direction: str
     obstruction_point_count: int
+    occupied_cell_count: int
     obstruction_center_xy: tuple[float, float] | None
 
 

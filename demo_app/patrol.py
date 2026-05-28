@@ -21,11 +21,12 @@ class PatrolController:
         loop_forever: bool = True,
         scan_turns: int = 4,
         scan_pause_sec: float = 1.0,
+        motion_settle_sec: float = 0.05,
         forward_steps_per_cycle: int = 3,
-        forward_speed_mps: float = 0.22,
-        forward_step_duration_sec: float = 1.0,
-        sweep_yaw_radps: float = 0.45,
-        sweep_turn_duration_sec: float = 0.55,
+        forward_speed_mps: float = 0.30,
+        forward_step_duration_sec: float = 1.25,
+        sweep_yaw_radps: float = 0.24,
+        sweep_turn_duration_sec: float = 0.28,
     ) -> None:
         self._runner = runner
         self._waypoints = waypoints
@@ -33,6 +34,7 @@ class PatrolController:
         self._loop_forever = loop_forever
         self._scan_turns = scan_turns
         self._scan_pause_sec = scan_pause_sec
+        self._motion_settle_sec = motion_settle_sec
         self._forward_steps_per_cycle = forward_steps_per_cycle
         self._forward_speed_mps = forward_speed_mps
         self._forward_step_duration_sec = forward_step_duration_sec
@@ -42,6 +44,7 @@ class PatrolController:
         self._stop_requested = False
         self._return_home_on_stop = False
         self._current_wp: str | None = None
+        self._web_state["patrol_phase"] = "IDLE"
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -150,6 +153,7 @@ class PatrolController:
             self._current_wp = None
             self._web_state["planned_path"] = []
             self._set_mode("IDLE")
+            self._set_phase("IDLE")
             self._push_event("state", {"mode": "IDLE"})
 
     async def _move_to_waypoint(self, waypoint: Waypoint) -> bool:
@@ -172,19 +176,24 @@ class PatrolController:
             return
 
         for _ in range(self._scan_turns):
-            for yaw_radps, duration_sec in (
-                (self._sweep_yaw_radps, self._sweep_turn_duration_sec),
-                (-self._sweep_yaw_radps, self._sweep_turn_duration_sec * 2.0),
-                (self._sweep_yaw_radps, self._sweep_turn_duration_sec),
+            for phase_name, yaw_radps, duration_sec in (
+                ("SWEEP_RIGHT", -self._sweep_yaw_radps, self._sweep_turn_duration_sec),
+                ("CENTER_FROM_RIGHT", self._sweep_yaw_radps, self._sweep_turn_duration_sec),
+                ("SWEEP_LEFT", self._sweep_yaw_radps, self._sweep_turn_duration_sec),
+                ("CENTER_FROM_LEFT", -self._sweep_yaw_radps, self._sweep_turn_duration_sec),
             ):
                 if self._stop_requested:
                     return
+                self._set_phase(phase_name)
                 await self.manual_drive(yaw_radps=yaw_radps, duration_sec=duration_sec)
+                await self._settle_motion()
                 await asyncio.sleep(self._scan_pause_sec)
+        self._set_phase("PATROLLING")
 
     async def _forward_step(self, step_number: int) -> None:
         if self._stop_requested:
             return
+        self._set_phase("FORWARD_STEP")
         pose = self._runner.get_pose()
         yaw_rad = math.radians(pose.yaw_deg)
         step_distance = self._forward_speed_mps * self._forward_step_duration_sec
@@ -195,7 +204,9 @@ class PatrolController:
             forward_mps=self._forward_speed_mps,
             duration_sec=self._forward_step_duration_sec,
         )
+        await self._settle_motion()
         await asyncio.sleep(0.20)
+        self._set_phase("PATROLLING")
 
     async def _return_home(self) -> None:
         pose = self._runner.get_pose()
@@ -205,8 +216,16 @@ class PatrolController:
     def _set_mode(self, mode: str) -> None:
         self._web_state["mode"] = mode
 
+    def _set_phase(self, phase: str) -> None:
+        self._web_state["patrol_phase"] = phase
+
     def _push_event(self, event_type: str, payload: dict[str, Any]) -> None:
         self._web_state.setdefault("event_log", []).append({"type": event_type, "payload": payload})
+
+    async def _settle_motion(self) -> None:
+        if self._stop_requested or self._motion_settle_sec <= 0:
+            return
+        await self.manual_drive(duration_sec=self._motion_settle_sec)
 
 
 def nearest_waypoint(pose: Pose, waypoints: list[Waypoint]) -> str:

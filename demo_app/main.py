@@ -20,6 +20,7 @@ from demo_app.patrol import PatrolController, nearest_waypoint
 from demo_app.robot import Go2Runner
 from demo_app.telegram_bot import TelegramBot
 from demo_app.types import AisleObservation, AlertEvent, Detection, Waypoint
+from demo_app.vision_obstruction import CenterLaneVisionDetector
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ async def run() -> None:
         loop_forever=cfg.patrol.loop_forever,
         scan_turns=cfg.patrol.scan_turns,
         scan_pause_sec=cfg.patrol.scan_pause_sec,
+        motion_settle_sec=cfg.patrol.motion_settle_sec,
         forward_steps_per_cycle=cfg.patrol.forward_steps_per_cycle,
         forward_speed_mps=cfg.patrol.forward_speed_mps,
         forward_step_duration_sec=cfg.patrol.forward_step_duration_sec,
@@ -82,13 +84,31 @@ async def run() -> None:
     last_pose_record = 0.0
     last_no_lidar_log = 0.0
     last_lidar_parse_log = 0.0
+    last_aisle_debug_log = 0.0
     clear_streak = 0
+    last_vision_debug_log = 0.0
 
     aisle_detector = AisleCorridorDetector(
         x_min_m=cfg.aisle.x_min_m,
         x_max_m=cfg.aisle.x_max_m,
         half_width_m=cfg.aisle.half_width_m,
         min_points_in_zone=cfg.aisle.min_points_in_zone,
+        min_z_m=cfg.aisle.min_z_m,
+        max_z_m=cfg.aisle.max_z_m,
+        cell_size_m=cfg.aisle.cell_size_m,
+        min_occupied_cells=cfg.aisle.min_occupied_cells,
+    )
+    vision_detector = CenterLaneVisionDetector()
+    logger.info(
+        "Aisle detector: x=[%.2f, %.2f] half_width=%.2f z=[%.2f, %.2f] min_points=%d min_cells=%d repeat=%.2fs",
+        cfg.aisle.x_min_m,
+        cfg.aisle.x_max_m,
+        cfg.aisle.half_width_m,
+        cfg.aisle.min_z_m,
+        cfg.aisle.max_z_m,
+        cfg.aisle.min_points_in_zone,
+        cfg.aisle.min_occupied_cells,
+        cfg.aisle.alert_repeat_sec,
     )
 
     def push_event(event_type: str, payload: dict[str, Any]) -> None:
@@ -343,6 +363,8 @@ async def run() -> None:
         nonlocal obstruction_latched
         nonlocal obstruction_task
         nonlocal last_obstruction_alert_ts
+        nonlocal last_aisle_debug_log
+        nonlocal last_vision_debug_log
 
         loop_interval = 0.25
         while not stop_event.is_set():
@@ -370,6 +392,17 @@ async def run() -> None:
             if not cfg.aisle.enabled:
                 continue
 
+            patrol_phase = str(web_state.get("patrol_phase", "IDLE"))
+            if patrol_phase not in {"FORWARD_STEP", "PATROLLING"}:
+                latest_observation = None
+                clear_streak = 0
+                obstruction_latched = False
+                web_state["corridor_clear"] = True
+                web_state["obstruction_distance_m"] = None
+                web_state["obstruction_direction"] = "center"
+                web_state["obstruction_point_count"] = 0
+                continue
+
             points = latest_lidar_points
             if points is None:
                 if now - last_no_lidar_log >= 3.0:
@@ -378,12 +411,51 @@ async def run() -> None:
                 continue
 
             latest_observation = await asyncio.to_thread(aisle_detector.analyze, points)
+            vision_observation = None
+            frame = web_state.get("latest_frame")
+            if frame is not None:
+                vision_observation = await asyncio.to_thread(vision_detector.detect, frame)
             web_state["corridor_clear"] = latest_observation.corridor_clear
             web_state["obstruction_distance_m"] = latest_observation.obstruction_distance_m
             web_state["obstruction_direction"] = latest_observation.obstruction_direction
             web_state["obstruction_point_count"] = latest_observation.obstruction_point_count
+            if now - last_aisle_debug_log >= 2.0:
+                logger.info(
+                    "Aisle sample: clear=%s points=%d cells=%d dist=%s dir=%s",
+                    latest_observation.corridor_clear,
+                    latest_observation.obstruction_point_count,
+                    latest_observation.occupied_cell_count,
+                    f"{latest_observation.obstruction_distance_m:.2f}m"
+                    if latest_observation.obstruction_distance_m is not None
+                    else "-",
+                    latest_observation.obstruction_direction,
+                )
+                last_aisle_debug_log = now
+            if vision_observation is not None and now - last_vision_debug_log >= 2.0:
+                logger.info(
+                    "Vision lane sample: blocked=%s area=%.0f bbox=%s",
+                    vision_observation.blocked,
+                    vision_observation.contour_area,
+                    vision_observation.bbox,
+                )
+                last_vision_debug_log = now
 
-            if latest_observation.corridor_clear:
+            effective_observation = latest_observation
+            if latest_observation.corridor_clear and vision_observation is not None and vision_observation.blocked:
+                effective_observation = AisleObservation(
+                    corridor_clear=False,
+                    obstruction_distance_m=1.0,
+                    obstruction_direction="center",
+                    obstruction_point_count=max(1, int(vision_observation.contour_area // 400)),
+                    occupied_cell_count=1,
+                    obstruction_center_xy=(1.0, 0.0),
+                )
+                web_state["corridor_clear"] = False
+                web_state["obstruction_distance_m"] = effective_observation.obstruction_distance_m
+                web_state["obstruction_direction"] = effective_observation.obstruction_direction
+                web_state["obstruction_point_count"] = effective_observation.obstruction_point_count
+
+            if effective_observation.corridor_clear:
                 clear_streak += 1
                 if clear_streak >= cfg.aisle.reclear_consecutive_frames and obstruction_latched:
                     obstruction_latched = False
@@ -402,7 +474,7 @@ async def run() -> None:
 
             obstruction_latched = True
             last_obstruction_alert_ts = now
-            obstruction_task = asyncio.create_task(handle_obstruction(latest_observation))
+            obstruction_task = asyncio.create_task(handle_obstruction(effective_observation))
 
     logger.info("Starting Telegram bot")
     await telegram.start()
