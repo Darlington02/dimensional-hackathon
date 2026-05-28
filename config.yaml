@@ -1,0 +1,33 @@
+robot:
+  ip: "192.168.12.1"
+  obstacle_avoidance: true
+  camera_resize: [640, 480]
+  connect_timeout_sec: 15
+
+waypoints:
+  - {id: W1, pos: [0.5, 0.0, 0.0], yaw: 0}
+  - {id: W2, pos: [0.5, 0.5, 0.0], yaw: 90}
+
+patrol:
+  loop_forever: true
+  scan_turns: 4
+  scan_pause_sec: 1.0
+
+detection:
+  enabled: true
+  model_name: yolo11n.pt
+  interval_sec: 0.5
+  conf_threshold: 0.25
+  cooldown_sec: 0
+  detection_classes: [person, chair, office chair, couch, bench, suitcase, backpack]
+
+alert:
+  audio_file: ../deploy_agentics_real/assets/alert.wav
+  clip_duration_sec: 5
+  buffer_seconds: 10
+  capture_fps: 15
+
+web:
+  host: 0.0.0.0
+  port: 8080
+  stream_fps: 10
