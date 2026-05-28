@@ -8,17 +8,10 @@ What it does:
 - serves the live FPV stream on a local dashboard
 - runs a simple sequential waypoint patrol
 - accepts `/patrol`, `/stop`, and `/status` via Telegram
-- runs YOLO-only tool detection
-- sends Telegram alerts with a JPG snapshot and MP4 clip
+- runs YOLO-only tool detection, detects persons, chairs, boxes etc
+- sends Telegram alerts with a JPG snapshot
 - plays a WAV locally and, if available, through the Go2 speaker
 
-What it does not do:
-
-- Gemini verification
-- Venice verification
-- LangGraph
-- compiled secrets
-- Docker packaging
 
 ## Layout
 
@@ -32,7 +25,7 @@ What it does not do:
 From the workspace root:
 
 ```bash
-cd /Users/darlingtonnnam/Desktop/programming/Robotics/dimos/demo
+cd dimos/demo
 pip install -r requirements.txt
 cp .env.example .env
 ```
@@ -50,7 +43,7 @@ If you prefer shell exports, that also works.
 ## Run
 
 ```bash
-cd /Users/darlingtonnnam/Desktop/programming/Robotics/dimos/demo
+cd dimos/demo
 ./run.sh
 ```
 
@@ -68,5 +61,4 @@ Telegram commands:
 ## Notes
 
 - The app is intended to run on your laptop or another host on the same Wi-Fi as the robot.
-- The default alert sound points at `../deploy_agentics_real/assets/alert.wav` so you can reuse the existing asset without copying binaries around.
 - Detection is YOLO-only. Any matching detection above the configured threshold can trigger an alert.
